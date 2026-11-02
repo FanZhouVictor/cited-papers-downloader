@@ -46,8 +46,10 @@ Files: `skills/download-cited-papers/SKILL.md`, `agents/openai.yaml`, `reference
 - [x] Write concise workflow instructions and install/usage documentation with `<MAIN_PDF>` / `<TARGET_FOLDER>` placeholders.
 - [x] Validate skill metadata and run independent forward test.
 - [x] Run real extraction and official-download smoke tests outside repository.
-- [ ] Review, repair material findings, run final suite, commit and push to a private repository; verify privacy and remote commit.
+- [x] Review, repair material findings, run final suite, commit and push to a private repository; verify privacy and remote commit.
 
 ## Execution record
 
 Separate new repository staged in a temporary directory; existing literature repo and manual folders remain untouched. GitHub account confirmed using authenticated CLI. Personal-path examples and test output will not be committed.
+
+All tasks complete. The independent review's two material findings have regression tests and fixes; the final offline suite passes 42 tests. The repository is published at `FanZhouVictor/cited-papers-downloader` with verified `PRIVATE` visibility. See `docs/TESTING.md` for scope and live-test limitations.
