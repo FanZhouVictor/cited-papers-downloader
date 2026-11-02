@@ -1,0 +1,4 @@
+interface:
+  display_name: "Download Cited Papers"
+  short_description: "Collect cited PDFs with official-version evidence"
+  default_prompt: "Use $download-cited-papers to collect papers cited by <MAIN_PDF> into <TARGET_FOLDER>, preserving citation numbers and verifying official publication versions."

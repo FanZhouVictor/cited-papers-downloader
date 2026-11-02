@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+.env
+.env.*
+*.pdf
+downloads/
+test-output/
+references.json
+references.csv
+.superpowers/

@@ -1,0 +1,25 @@
+[
+  {
+    "citation_number": 1,
+    "title": "Attention Is All You Need",
+    "short_title": "Attention-Is-All-You-Need",
+    "authors": [
+      "Ashish Vaswani",
+      "Noam Shazeer",
+      "Niki Parmar",
+      "Jakob Uszkoreit",
+      "Llion Jones",
+      "Aidan N. Gomez",
+      "Łukasz Kaiser",
+      "Illia Polosukhin"
+    ],
+    "venue": "NeurIPS",
+    "year": 2017,
+    "publication_status": "published",
+    "version": "publishedVersion",
+    "pdf_url": "https://papers.nips.cc/paper_files/paper/2017/file/3f5ee243547dee91fbd053c1c4a845aa-Paper.pdf",
+    "source_url": "https://papers.nips.cc/paper_files/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html",
+    "evidence_url": "https://papers.nips.cc/paper_files/paper/2017/hash/3f5ee243547dee91fbd053c1c4a845aa-Abstract.html",
+    "notes": "Schema example only: citation_number must be replaced with the number in the supplied main PDF. The official proceedings page links this final conference PDF."
+  }
+]
