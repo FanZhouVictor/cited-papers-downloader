@@ -49,3 +49,9 @@ An independent skill scenario check verified that failed/unavailable citations a
 An independent code review identified the missing-file restoration and index-conflict retry cases. Both were reproduced, repaired, and included in the green full suite.
 
 In the existing temporary LatentRAG collection, reference 19 was then imported from an already saved local Search-R1 PDF. Its first page identified the official COLM 2025 publication. The helper validated 31 pages, copied it to `19_Search-R1_COLM_2025/paper.pdf`, recorded `manual_import` provenance and checksum, and preserved the original byte-for-byte. A subsequent fetch retained the successful local import without a network download. The test collection now contains two successful papers, one nonpaper and 87 unresolved references.
+
+## Journal identity-layout correction
+
+The full collection run exposed a Nature Medicine article whose author list is printed at the end. A first-page header title match may now be corroborated by an exact normalized embedded PDF title and one entire resolved author name in its embedded author field when no title-page byline is present. Metadata alone never replaces the header title check. The saved identity-check field records this fallback explicitly.
+
+Three new two-page PDF regression tests were written and observed failing before the correction. They cover the valid journal layout, missing/mismatched metadata, and a different paper with misleading metadata and an abstract citation. The full suite now passes 59 tests; an independent focused review also passed. The actual official Nature Medicine PDF validates as 20 pages without modifying it.

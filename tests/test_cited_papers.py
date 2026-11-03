@@ -52,6 +52,23 @@ def resolution(**changes):
     return row
 
 
+def author_at_end_pdf_bytes(metadata):
+    """A journal PDF whose authors appear only on its second page."""
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter()
+    for lines in (
+        ["Reliable Evidence Retrieval",
+         "A list of authors and affiliations appears at the end of the paper.",
+         "Abstract", "Journal abstract and article text."],
+        ["Authors and affiliations", "Ada Researcher"],
+    ):
+        writer.add_page(PdfReader(io.BytesIO(pdf_bytes(lines))).pages[0])
+    writer.add_metadata(metadata)
+    result = io.BytesIO()
+    writer.write(result)
+    return result.getvalue()
+
+
 class ProjectTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -145,6 +162,8 @@ class ProjectTests(unittest.TestCase):
         saved = self.target / "1_Evidence-R1_COLM_2025/paper.pdf"
         self.assertEqual(saved.read_bytes(), body)
         self.assertEqual(cp.load_manifest(self.target)["references"][0]["status"], "downloaded")
+        self.assertEqual(cp.load_manifest(self.target)["references"][0]["identity_check"],
+                         "first_page_title_and_byline")
         self.assertTrue(saved.with_name("metadata.json").is_file())
         with patch.object(cp, "transfer_pdf", side_effect=AssertionError("Resume used network")):
             cp.download(self.target, only=[1])
@@ -172,6 +191,49 @@ class ProjectTests(unittest.TestCase):
             cp.download(self.target, only=[1])
         self.assertEqual(cp.load_manifest(self.target)["references"][0]["status"], "failed")
         self.assertFalse(list(self.target.rglob("paper.pdf")))
+
+    def test_author_at_end_journal_uses_matching_embedded_title_and_full_author(self):
+        paper = self.root / "journal.pdf"
+        paper.write_bytes(author_at_end_pdf_bytes({
+            "/Title": "RELIABLE evidence: retrieval", "/Author": "ADA RESEARCHER"}))
+        try:
+            result = cp.validate_pdf(paper, resolution(authors=["Bob Author", "Ada Researcher"]))
+        except ValueError as error:
+            self.fail("Matching journal metadata was rejected: " + str(error))
+        self.assertEqual(result, {
+            "page_count": 2,
+            "identity_check": "first_page_title_and_embedded_title_author",
+        })
+
+    def test_author_at_end_journal_rejects_missing_or_mismatched_metadata(self):
+        paper = self.root / "journal.pdf"
+        for metadata in (
+            {},
+            {"/Title": "Reliable Evidence Retrieval"},
+            {"/Author": "Ada Researcher"},
+            {"/Title": "Different Journal Article", "/Author": "Ada Researcher"},
+            {"/Title": "Reliable Evidence Retrieval", "/Author": "Bob Author"},
+            {"/Title": "Reliable Evidence Retrieval", "/Author": "A. Researcher"},
+            {"/Title": "Reliable Evidence Retrieval Supplement", "/Author": "Ada Researcher"},
+        ):
+            with self.subTest(metadata=metadata):
+                paper.write_bytes(author_at_end_pdf_bytes(metadata))
+                with self.assertRaises(ValueError):
+                    cp.validate_pdf(paper, resolution())
+
+    def test_matching_metadata_does_not_replace_first_page_header_title(self):
+        from pypdf import PdfReader, PdfWriter
+        writer = PdfWriter()
+        writer.add_page(PdfReader(io.BytesIO(pdf_bytes([
+            "Completely Different Study", "Bob Author", "Abstract",
+            "We compare with Reliable Evidence Retrieval by Ada Researcher.",
+        ]))).pages[0])
+        writer.add_metadata({"/Title": "Reliable Evidence Retrieval", "/Author": "Ada Researcher"})
+        paper = self.root / "wrong-journal.pdf"
+        with paper.open("wb") as handle:
+            writer.write(handle)
+        with self.assertRaises(ValueError):
+            cp.validate_pdf(paper, resolution())
 
     def test_metadata_created_during_transfer_is_preserved(self):
         self.init()

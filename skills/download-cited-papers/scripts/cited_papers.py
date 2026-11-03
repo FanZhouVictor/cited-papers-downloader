@@ -307,9 +307,18 @@ def validate_pdf(path, record):
     # Whitespace removal tolerates wrapped names and flattened superscript digits.
     byline = compact_header[title_start + len(compact_title):]
     author_names = ["".join(normalized_words(author)) for author in record["authors"]]
+    identity_check = "first_page_title_and_byline"
     if not any(author and author in byline for author in author_names):
-        raise ValueError("Downloaded PDF authors do not match the resolved paper.")
-    return {"page_count": len(reader.pages), "identity_check": "first_page_title_and_byline"}
+        # Some journals print their author list at the end of the article.
+        # Require both embedded fields to corroborate the already matched header title.
+        metadata = reader.metadata
+        metadata_title = "".join(normalized_words(metadata.title or "")) if metadata else ""
+        metadata_author = "".join(normalized_words(metadata.author or "")) if metadata else ""
+        if metadata_title != compact_title or not any(
+                author and author == metadata_author for author in author_names):
+            raise ValueError("Downloaded PDF authors do not match the resolved paper.")
+        identity_check = "first_page_title_and_embedded_title_author"
+    return {"page_count": len(reader.pages), "identity_check": identity_check}
 
 
 def download(target, only=None):
