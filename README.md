@@ -40,6 +40,21 @@ Codex searches primary publication sources and writes a resolution JSON array in
 
 To retry selected entries, use `fetch --target '<TARGET_FOLDER>' --only 19 35`. `resolve` validates the whole submitted batch before applying updates.
 
+## Manual download fallback
+
+If an automatic download fails or an official PDF is unavailable, Codex asks you to download the paper manually and provide its local path. The report's `manual_downloads` list includes each missing citation's number, title, source link, reason, and required version. Codex requests missing papers together, supplies their official landing links, and continues independent references while waiting. You can reply with citation/path pairs, such as `19: <LOCAL_PDF>`; you do not need to run the helper yourself.
+
+Codex verifies each local paper and its publication version, resolves any missing metadata, then imports it into the existing target:
+
+```bash
+.venv/bin/python scripts/cited_papers.py import-pdf --target '<TARGET_FOLDER>' --citation 19 --file '<LOCAL_PDF>' --version publishedVersion
+.venv/bin/python scripts/cited_papers.py report --target '<TARGET_FOLDER>'
+```
+
+Replace the citation and path with the actual inputs, and pass the verified version. Import reuses saved resolution metadata even when `pdf_url` is `null`; unknown or nonpaper records are ineligible. A local path alone does not prove the publication version. Published or accepted papers require the official final `publishedVersion`; `submittedVersion` is eligible only for a positively classified preprint.
+
+Import makes no network requests. It validates readable PDF content and title/author identity, copies the PDF into the numbered folder, and records manual acquisition, original local path, timestamp, and checksum. The source file stays intact, repeated imports of the same file are idempotent, and existing conflicting files are preserved. A record becomes downloaded only after successful validation and organization.
+
 ## Version and file rules
 
 For known published or accepted papers, only a verified official final `publishedVersion` is eligible. An accepted manuscript (`acceptedVersion`) or preprint (`submittedVersion`) cannot substitute when the official PDF is inaccessible. Use `pdf_url: null` and explain the missing official PDF; it becomes `official_pdf_unavailable`. A failed DOI query does not prove preprint status. Uncertain publication status becomes `needs_review`; affirmative evidence is required for a preprint download.
@@ -61,4 +76,4 @@ python3 -m venv .venv
 .venv/bin/python skills/download-cited-papers/scripts/cited_papers.py --help
 ```
 
-The offline suite covers extraction, version policy, source binding, download validation, resume, and preservation of manual files. CI runs the suite on supported Python versions. Real publication lookups and downloads are separate smoke tests and stay outside the repository.
+The offline suite covers extraction, version policy, source binding, download and manual-import validation, resume, file preservation, and manual-action reporting. CI runs the suite on supported Python versions. Real publication lookups and downloads are separate smoke tests and stay outside the repository.

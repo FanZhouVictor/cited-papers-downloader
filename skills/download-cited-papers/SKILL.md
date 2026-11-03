@@ -38,7 +38,7 @@ The commands below assume the installed skill has `.venv/bin/python` as describe
    | `unknown` | No download | Keep for review |
    | `nonpaper` | No download | Keep accounted for |
 
-   **For a known accepted or published paper, never substitute an accepted author manuscript (`acceptedVersion`) or preprint (`submittedVersion`).** An official 403, paywall, broken link, time pressure, or desire for a complete collection does not relax this rule. Try another verified official final source; if none is available, leave the PDF unavailable. Never relabel a manuscript as `publishedVersion` or reclassify the paper as `preprint` to make it downloadable.
+   **For a known accepted or published paper, never substitute an accepted author manuscript (`acceptedVersion`) or preprint (`submittedVersion`).** An official 403, paywall, broken link, time pressure, or desire for a complete collection does not relax this rule. Try another verified official final source; if none is available, keep the PDF unavailable pending a verified manual copy. Never relabel a manuscript as `publishedVersion` or reclassify the paper as `preprint` to make it downloadable.
 
    ```bash
    .venv/bin/python scripts/cited_papers.py resolve --target '<TARGET_FOLDER>' --records '<RESOLUTION_JSON>'
@@ -48,4 +48,14 @@ The commands below assume the installed skill has `.venv/bin/python` as describe
 
    Use `fetch --target '<TARGET_FOLDER>' --only 19 35` for selected retries. Missing official PDFs become `official_pdf_unavailable`; uncertain status becomes `needs_review`.
 
-5. Report downloaded, unavailable, unresolved/review, nonpaper, and failed references with evidence and reasons. State partial completion clearly. The helper checks readable PDF content and title/author identity, then records checksums and provenance. Existing manual files stay intact; a filename alone proves no identity or version. Resume uses saved checksums, and a manifest is bound to the main PDF's checksum. Never switch source PDFs under an existing manifest.
+5. After automatic attempts, use the report's `manual_downloads` list to request manual downloads for failed or unavailable papers. Each item supplies `citation_number`, `title`, `source_url`, `reason`, and `required_version`. In one concise message, list the missing citations with their titles, official landing links, reasons, and required versions; ask the user to download them and reply with citation/local-path pairs, such as `19: <LOCAL_PDF>`. The user need not run a command. Continue independent references while waiting.
+
+   When a path arrives, verify the local paper's identity and publication version from authoritative evidence. A local path or filename alone does not establish either. Resolve missing identity or publication metadata first; `unknown` and `nonpaper` records cannot be imported. Use the existing target and resolved metadata, even when `pdf_url` is `null`:
+
+   ```bash
+   .venv/bin/python scripts/cited_papers.py import-pdf --target '<TARGET_FOLDER>' --citation 19 --file '<LOCAL_PDF>' --version publishedVersion
+   ```
+
+   Substitute the actual citation and verified version. Accepted or published papers still require an official final `publishedVersion`; use `submittedVersion` only for a positively classified preprint. The import itself makes no network requests. It checks readability and title/author identity, copies the PDF into the numbered paper folder, and records manual acquisition, source path, timestamp, and checksum. It preserves the original and existing conflicting files; repeating the same import is idempotent. Only a successful import changes the record to downloaded. Re-run `report` afterward.
+
+6. Report downloaded, unavailable, unresolved/review, nonpaper, and failed references with evidence and reasons. State partial completion clearly. Resume uses saved checksums, and a manifest is bound to the main PDF's checksum. Never switch source PDFs under an existing manifest.

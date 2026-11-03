@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -185,7 +186,7 @@ def check_url(value, field):
     return value
 
 
-def validate_resolution(record):
+def validate_resolution(record, require_pdf_url=True):
     if not isinstance(record, dict) or set(record) - RESOLUTION_FIELDS:
         raise ValueError("Resolution records contain unsupported fields; citation provenance cannot be replaced.")
     row = dict(record)
@@ -206,7 +207,7 @@ def validate_resolution(record):
         return row
     for field in ("source_url", "evidence_url"):
         check_url(row.get(field), field)
-    if not row.get("pdf_url"):
+    if require_pdf_url and not row.get("pdf_url"):
         row["status"] = "official_pdf_unavailable" if state in {"published", "accepted"} else "pdf_unavailable"
         return row
     if state in {"published", "accepted"} and row.get("version") != "publishedVersion":
@@ -325,7 +326,9 @@ def download(target, only=None):
             temporary = None
             try:
                 # Reapply policy and folder derivation, even if someone edited the manifest.
-                validated = validate_resolution({k: row[k] for k in RESOLUTION_FIELDS if k in row})
+                manual_import = row.get("acquisition_method") == "manual_import"
+                validated = validate_resolution({k: row[k] for k in RESOLUTION_FIELDS if k in row},
+                                                require_pdf_url=not manual_import)
                 if validated["status"] != "ready":
                     row["status"] = validated["status"]
                     continue
@@ -356,6 +359,8 @@ def download(target, only=None):
                     if not metadata.exists():
                         atomic_text(metadata, json.dumps(row, indent=2, ensure_ascii=False) + "\n", replace=False)
                     continue
+                if manual_import:
+                    raise ValueError("Manually imported PDF is missing; provide its local path with import-pdf to restore it.")
                 if metadata.exists():
                     raise ValueError("Existing metadata.json was preserved; inspect the incomplete paper folder before retrying.")
                 descriptor, name = tempfile.mkstemp(prefix=".paper-", suffix=".part", dir=str(folder))
@@ -381,16 +386,134 @@ def download(target, only=None):
     return manifest
 
 
+def import_pdf(target, citation, file_path, version):
+    """Copy a verified local PDF into its resolved citation folder, offline."""
+    target = target_path(target)
+    if type(citation) is not int or citation < 1:
+        raise ValueError("Supply a positive integer citation number from the main PDF.")
+    raw = os.fspath(file_path).strip()
+    if not raw or any(token in raw for token in ("<", ">", "${")):
+        raise ValueError("Supply the actual local PDF path, not a placeholder.")
+    source = Path(raw).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError("Local PDF does not exist or is not a regular file: " + str(source))
+    if source.stat().st_size > MAX_PDF_BYTES:
+        raise ValueError("Local PDF exceeds the 100 MiB size limit.")
+    with project_lock(target):
+        for name in ("references.json", "references.csv"):
+            index = target / name
+            if index.is_symlink() or (index.exists() and not index.is_file()):
+                raise ValueError("Collection indexes must be regular files, not symlinks or directories.")
+        original_manifest = (target / "references.json").read_bytes()
+        manifest = load_manifest(target)
+        row = next((r for r in manifest["references"] if r["citation_number"] == citation), None)
+        if row is None:
+            raise ValueError("Citation number is absent from this main PDF: " + str(citation))
+        if row.get("publication_status") not in {"published", "accepted", "preprint"}:
+            raise ValueError("Resolve this paper's identity and publication status before importing a PDF.")
+        record = {key: row[key] for key in RESOLUTION_FIELDS if key in row}
+        record["version"] = version
+        verified = validate_resolution(record, require_pdf_url=False)
+        try:
+            validate_pdf(source, verified)
+        except Exception as error:
+            raise ValueError("Local PDF validation failed: " + str(error)) from error
+        folder = target / verified["folder"]
+        if folder.is_symlink() or folder.resolve().parent != target:
+            raise ValueError("Paper folder must be directly inside the destination and not a symlink.")
+        destination = folder / "paper.pdf"
+        metadata = folder / "metadata.json"
+        if destination.is_symlink() or metadata.is_symlink():
+            raise ValueError("Paper files and metadata must not be symlinks.")
+        if destination.exists():
+            digest = sha256(source)
+            if (not row.get("sha256") or row["sha256"] != digest or sha256(destination) != digest
+                    or row.get("version") != version):
+                raise ValueError("Existing paper.pdf conflicts with this import; it was preserved for manual review.")
+            if metadata.exists():
+                try:
+                    saved = json.loads(metadata.read_text(encoding="utf-8"))
+                except (ValueError, UnicodeError):
+                    raise ValueError("Existing metadata.json was preserved for manual review.")
+                if (not isinstance(saved, dict) or saved.get("sha256") != digest
+                        or saved.get("citation_number") != citation):
+                    raise ValueError("Existing metadata.json conflicts with this import; it was preserved.")
+            elif row["status"] == "downloaded":
+                atomic_text(metadata, json.dumps(row, indent=2, ensure_ascii=False) + "\n", replace=False)
+            if row["status"] != "downloaded":
+                raise ValueError("Existing incomplete paper folder was preserved; inspect it before importing again.")
+            return manifest
+        restoring = None
+        if metadata.exists():
+            try:
+                saved = json.loads(metadata.read_text(encoding="utf-8"))
+            except (ValueError, UnicodeError):
+                raise ValueError("Existing metadata.json was preserved; inspect the paper folder before importing.")
+            if (not isinstance(saved, dict) or not row.get("sha256") or sha256(source) != row["sha256"]
+                    or saved.get("sha256") != row["sha256"] or saved.get("citation_number") != citation
+                    or saved.get("acquisition_method") != "manual_import"
+                    or saved.get("version") != version or saved.get("title") != verified["title"]):
+                raise ValueError("Existing metadata.json was preserved; inspect the paper folder before importing.")
+            restoring = saved
+        folder.mkdir(exist_ok=True)
+        descriptor, name = tempfile.mkstemp(prefix=".manual-", suffix=".part", dir=str(folder))
+        os.close(descriptor)
+        temporary = Path(name)
+        created_metadata = False
+        created_pdf = False
+        content = None
+        try:
+            shutil.copyfile(str(source), str(temporary))
+            if temporary.stat().st_size > MAX_PDF_BYTES:
+                raise ValueError("Local PDF exceeds the 100 MiB size limit.")
+            inspection = validate_pdf(temporary, verified)
+            result = dict(restoring or row, **inspection)
+            result.update(version=version, folder=verified["folder"], status="downloaded", sha256=sha256(temporary))
+            if not restoring:
+                result.update(acquisition_method="manual_import", manual_source_path=str(source), imported_at=now())
+            result.pop("error", None)
+            content = json.dumps(result, indent=2, ensure_ascii=False) + "\n"
+            if not restoring:
+                atomic_text(metadata, content, replace=False)
+                created_metadata = True
+            os.link(str(temporary), str(destination))
+            created_pdf = True
+            row.clear()
+            row.update(result)
+            save_manifest(target, manifest)
+        except Exception:
+            # If the manifest did not commit, remove only files this import owns.
+            # A committed manifest with a later CSV error retains a consistent PDF.
+            if (target / "references.json").read_bytes() == original_manifest:
+                if created_pdf and not destination.is_symlink() and destination.exists() and destination.samefile(temporary):
+                    destination.unlink()
+                if created_metadata and not metadata.is_symlink() and metadata.exists() and metadata.read_text(encoding="utf-8") == content:
+                    metadata.unlink()
+            raise
+        finally:
+            temporary.unlink(missing_ok=True)
+    return manifest
+
+
 def summarize(manifest):
     counts = dict(sorted(Counter(row["status"] for row in manifest["references"]).items()))
     complete = all(row["status"] in {"downloaded", "nonpaper"} for row in manifest["references"])
-    return {"references": len(manifest["references"]), "complete": complete, "statuses": counts}
+    manual = []
+    for row in manifest["references"]:
+        if (row["status"] in {"failed", "official_pdf_unavailable", "pdf_unavailable"}
+                and row.get("publication_status") in {"published", "accepted", "preprint"}):
+            manual.append({"citation_number": row["citation_number"], "title": row.get("title", row["raw_citation"]),
+                           "source_url": row.get("source_url") or row.get("evidence_url") or row.get("pdf_url"),
+                           "reason": row.get("error") or row.get("notes") or "Required PDF is unavailable for automatic download.",
+                           "required_version": "submittedVersion" if row["publication_status"] == "preprint" else "publishedVersion"})
+    return {"references": len(manifest["references"]), "complete": complete, "statuses": counts,
+            "manual_downloads": manual}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("init", "resolve", "fetch", "report"):
+    for command in ("init", "resolve", "fetch", "report", "import-pdf"):
         child = sub.add_parser(command)
         child.add_argument("--target", required=True, help="Actual destination folder; no default.")
         if command == "init":
@@ -399,6 +522,11 @@ def main(argv=None):
             child.add_argument("--records", required=True, help="JSON array of verified resolution records.")
         elif command == "fetch":
             child.add_argument("--only", type=int, nargs="+", help="Fetch only these reference numbers.")
+        elif command == "import-pdf":
+            child.add_argument("--citation", type=int, required=True, help="Citation number in the existing collection.")
+            child.add_argument("--file", required=True, help="Local manually downloaded PDF; the original is preserved.")
+            child.add_argument("--version", required=True, choices=["publishedVersion", "acceptedVersion", "submittedVersion"],
+                               help="Verified version of the local PDF; existing publication rules still apply.")
     args = parser.parse_args(argv)
     try:
         if args.command == "init":
@@ -408,6 +536,8 @@ def main(argv=None):
             manifest = resolve_records(args.target, records)
         elif args.command == "fetch":
             manifest = download(args.target, args.only)
+        elif args.command == "import-pdf":
+            manifest = import_pdf(args.target, args.citation, args.file, args.version)
         else:
             manifest = load_manifest(args.target)
         result = summarize(manifest)

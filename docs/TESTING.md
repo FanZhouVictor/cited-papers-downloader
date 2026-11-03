@@ -39,3 +39,13 @@ The user's local LatentRAG main PDF was read without modification. Both the Popp
 - Remaining 87 references: intentionally left unresolved; this was a smoke test rather than a full collection run.
 
 The repository includes code, synthetic tests and documentation only. Main PDFs, downloaded papers, resolution records and personal absolute paths were not committed.
+
+## Manual-download fallback extension
+
+The extended offline suite passes 56 tests. New cases cover importing a manually saved final PDF with no automatic PDF URL, copying without moving the original, idempotency, strict version checks, wrong/missing files, incomplete metadata, destination conflicts, manual-action reporting, CLI inputs, and successful resume after manual import. Regression tests also cover restoring a missing imported PDF using matching generated metadata, preflighting index conflicts, and retrying after a failed manifest write.
+
+An independent skill scenario check verified that failed/unavailable citations are grouped into one request with official links and citation/local-path pairs; independent references can continue while waiting. The skill checks identity and version before importing a supplied file.
+
+An independent code review identified the missing-file restoration and index-conflict retry cases. Both were reproduced, repaired, and included in the green full suite.
+
+In the existing temporary LatentRAG collection, reference 19 was then imported from an already saved local Search-R1 PDF. Its first page identified the official COLM 2025 publication. The helper validated 31 pages, copied it to `19_Search-R1_COLM_2025/paper.pdf`, recorded `manual_import` provenance and checksum, and preserved the original byte-for-byte. A subsequent fetch retained the successful local import without a network download. The test collection now contains two successful papers, one nonpaper and 87 unresolved references.

@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -281,6 +282,183 @@ class ProjectTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cp.download(self.target, only=[999])
         self.assertEqual((self.target / "references.json").read_bytes(), before)
+
+    def local_pdf(self, lines=None):
+        source = self.root / "My Downloads" / "arbitrary filename.pdf"
+        source.parent.mkdir(exist_ok=True)
+        source.write_bytes(pdf_bytes(lines or ["Reliable Evidence Retrieval", "Ada Researcher", "Abstract", "Full paper"]))
+        return source
+
+    def test_import_organizes_unavailable_paper_without_network_or_moving_original(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        source = self.local_pdf()
+        original = source.read_bytes()
+        with patch.object(cp, "transfer_pdf", side_effect=AssertionError("Local import used network")):
+            cp.import_pdf(self.target, 1, source, "publishedVersion")
+        row = cp.load_manifest(self.target)["references"][0]
+        saved = self.target / "1_Evidence-R1_COLM_2025/paper.pdf"
+        self.assertEqual(row["status"], "downloaded")
+        self.assertEqual(row["acquisition_method"], "manual_import")
+        self.assertEqual(row["manual_source_path"], str(source.resolve()))
+        self.assertTrue(row["imported_at"])
+        self.assertEqual(saved.read_bytes(), original)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertEqual(json.loads(saved.with_name("metadata.json").read_text())["sha256"], row["sha256"])
+        self.assertIn("downloaded", (self.target / "references.csv").read_text())
+
+    def test_manual_import_same_file_is_idempotent(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        source = self.local_pdf()
+        cp.import_pdf(self.target, 1, source, "publishedVersion")
+        before = (self.target / "references.json").read_bytes()
+        cp.import_pdf(self.target, 1, source, "publishedVersion")
+        self.assertEqual((self.target / "references.json").read_bytes(), before)
+        self.assertEqual(len(list(self.target.rglob("paper.pdf"))), 1)
+
+    def test_fetch_preserves_success_of_local_import_without_pdf_url(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        cp.import_pdf(self.target, 1, self.local_pdf(), "publishedVersion")
+        with patch.object(cp, "transfer_pdf", side_effect=AssertionError("Manual resume used network")):
+            cp.download(self.target, only=[1])
+        self.assertEqual(cp.load_manifest(self.target)["references"][0]["status"], "downloaded")
+        self.assertEqual(cp.summarize(cp.load_manifest(self.target))["manual_downloads"], [])
+
+    def test_missing_manual_pdf_can_be_restored_using_matching_generated_metadata(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        source = self.local_pdf()
+        cp.import_pdf(self.target, 1, source, "publishedVersion")
+        saved = self.target / "1_Evidence-R1_COLM_2025/paper.pdf"
+        metadata_before = saved.with_name("metadata.json").read_bytes()
+        saved.unlink()
+        cp.download(self.target, only=[1])
+        self.assertEqual(cp.load_manifest(self.target)["references"][0]["status"], "failed")
+        cp.import_pdf(self.target, 1, source, "publishedVersion")
+        self.assertEqual(saved.read_bytes(), source.read_bytes())
+        self.assertEqual(saved.with_name("metadata.json").read_bytes(), metadata_before)
+        self.assertEqual(cp.load_manifest(self.target)["references"][0]["status"], "downloaded")
+
+    def test_manual_import_preflights_index_conflicts_before_creating_files(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        source = self.local_pdf()
+        original = (self.target / "references.json").read_bytes()
+        other = self.root / "User Notes.txt"
+        other.write_text("Preserve these user notes")
+        index = self.target / "references.csv"
+        index.unlink()
+        index.symlink_to(other)
+        with self.assertRaises(ValueError):
+            cp.import_pdf(self.target, 1, source, "publishedVersion")
+        self.assertEqual(other.read_text(), "Preserve these user notes")
+        self.assertEqual((self.target / "references.json").read_bytes(), original)
+        self.assertFalse(list(self.target.rglob("paper.pdf")))
+        self.assertFalse(list(self.target.rglob("metadata.json")))
+        index.unlink()
+        cp.import_pdf(self.target, 1, source, "publishedVersion")
+        self.assertEqual(cp.load_manifest(self.target)["references"][0]["status"], "downloaded")
+
+    def test_manual_import_save_failure_rolls_back_owned_files_and_allows_retry(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        source = self.local_pdf()
+        original = (self.target / "references.json").read_bytes()
+        with patch.object(cp, "save_manifest", side_effect=OSError("Simulated write failure")), self.assertRaises(OSError):
+            cp.import_pdf(self.target, 1, source, "publishedVersion")
+        self.assertEqual((self.target / "references.json").read_bytes(), original)
+        self.assertFalse(list(self.target.rglob("paper.pdf")))
+        self.assertFalse(list(self.target.rglob("metadata.json")))
+        self.assertTrue(source.is_file())
+        cp.import_pdf(self.target, 1, source, "publishedVersion")
+        self.assertEqual(cp.load_manifest(self.target)["references"][0]["status"], "downloaded")
+
+    def test_manual_preprint_import_requires_preprint_classification(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None, publication_status="preprint", version="submittedVersion", venue="arXiv")])
+        cp.import_pdf(self.target, 1, self.local_pdf(), "submittedVersion")
+        row = cp.load_manifest(self.target)["references"][0]
+        self.assertEqual(row["status"], "downloaded")
+        self.assertEqual(row["folder"], "1_Evidence-R1_arXiv_2025")
+
+    def test_manual_import_rejects_nonfinal_versions_for_accepted_paper(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None, publication_status="accepted")])
+        source = self.local_pdf()
+        before = (self.target / "references.json").read_bytes()
+        for version in ("submittedVersion", "acceptedVersion", "unknown"):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                cp.import_pdf(self.target, 1, source, version)
+        self.assertEqual((self.target / "references.json").read_bytes(), before)
+        self.assertFalse(list(self.target.rglob("paper.pdf")))
+
+    def test_wrong_local_paper_does_not_change_manifest(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        before = (self.target / "references.json").read_bytes()
+        with self.assertRaises(ValueError):
+            cp.import_pdf(self.target, 1, self.local_pdf(["Different Paper", "Other Author"]), "publishedVersion")
+        self.assertEqual((self.target / "references.json").read_bytes(), before)
+        self.assertFalse(list(self.target.rglob("paper.pdf")))
+
+    def test_manual_import_requires_known_citation_and_resolved_metadata(self):
+        self.init()
+        source = self.local_pdf()
+        before = (self.target / "references.json").read_bytes()
+        for number in (1, 99, True):
+            with self.subTest(number=number), self.assertRaises(ValueError):
+                cp.import_pdf(self.target, number, source, "publishedVersion")
+        self.assertEqual((self.target / "references.json").read_bytes(), before)
+
+    def test_manual_import_missing_file_preserves_collection(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        before = (self.target / "references.json").read_bytes()
+        with self.assertRaises(ValueError):
+            cp.import_pdf(self.target, 1, self.root / "missing.pdf", "publishedVersion")
+        self.assertEqual((self.target / "references.json").read_bytes(), before)
+
+    def test_manual_import_preserves_conflicting_pdf_and_metadata(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        source = self.local_pdf()
+        folder = self.target / "1_Evidence-R1_COLM_2025"
+        folder.mkdir()
+        before = (self.target / "references.json").read_bytes()
+        for filename in ("paper.pdf", "metadata.json"):
+            existing = folder / filename
+            existing.write_bytes(b"User-created file")
+            with self.subTest(filename=filename), self.assertRaises(ValueError):
+                cp.import_pdf(self.target, 1, source, "publishedVersion")
+            self.assertEqual(existing.read_bytes(), b"User-created file")
+            self.assertEqual((self.target / "references.json").read_bytes(), before)
+            existing.unlink()
+
+    def test_report_requests_manual_paths_for_failed_and_unavailable_papers(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None), resolution(citation_number=2)])
+        with patch.object(cp, "transfer_pdf", side_effect=ValueError("HTTP 403")):
+            cp.download(self.target, only=[2])
+        summary = cp.summarize(cp.load_manifest(self.target))
+        self.assertEqual([r["citation_number"] for r in summary["manual_downloads"]], [1, 2])
+        self.assertEqual(summary["manual_downloads"][0]["required_version"], "publishedVersion")
+        self.assertEqual(summary["manual_downloads"][1]["reason"], "HTTP 403")
+        self.assertEqual(summary["manual_downloads"][0]["source_url"], "https://example.org/paper")
+        cp.import_pdf(self.target, 1, self.local_pdf(), "publishedVersion")
+        self.assertEqual([r["citation_number"] for r in cp.summarize(cp.load_manifest(self.target))["manual_downloads"]], [2])
+
+    def test_manual_import_cli_requires_explicit_version_then_imports(self):
+        self.init()
+        cp.resolve_records(self.target, [resolution(pdf_url=None)])
+        command = [sys.executable, str(SCRIPTS / "cited_papers.py"), "import-pdf", "--target", str(self.target),
+                   "--citation", "1", "--file", str(self.local_pdf())]
+        missing_version = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(missing_version.returncode, 2)
+        result = subprocess.run(command + ["--version", "publishedVersion"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["statuses"]["downloaded"], 1)
 
 
 class TransferTests(unittest.TestCase):
